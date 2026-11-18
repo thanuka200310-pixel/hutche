@@ -1,0 +1,307 @@
+name: Build Hutch Booster APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Full Android Project Automatically
+        run: |
+          mkdir -p app/src/main/java/com/hutch/booster
+
+          cat << 'EOF' > settings.gradle
+          rootProject.name = "HutchBooster"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies { classpath 'com.android.tools.build:gradle:8.0.2' }
+          }
+          allprojects {
+              repositories { google(); mavenCentral() }
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.hutch.booster'
+              compileSdk 33
+              defaultConfig {
+                  applicationId "com.hutch.booster"
+                  minSdk 24
+                  targetSdk 33
+                  versionCode 2
+                  versionName "2.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:label="Hutch Booster"
+                  android:icon="@android:drawable/stat_sys_upload_done"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service android:name=".MainActivity$KeepAliveService" android:exported="false" />
+
+                  <service
+                      android:name=".MainActivity$BoosterTileService"
+                      android:icon="@android:drawable/stat_notify_sync"
+                      android:label="Hutch Boost"
+                      android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.service.quicksettings.action.QS_TILE" />
+                      </intent-filter>
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/hutch/booster/MainActivity.java
+          package com.hutch.booster;
+
+          import android.app.*;
+          import android.content.*;
+          import android.content.pm.PackageManager;
+          import android.graphics.*;
+          import android.os.*;
+          import android.service.quicksettings.*;
+          import android.view.Gravity;
+          import android.widget.*;
+          import java.net.*;
+          import java.util.concurrent.*;
+
+          public class MainActivity extends Activity {
+              private TextView statusText;
+              private Button toggleBtn;
+              private final Handler uiHandler = new Handler(Looper.getMainLooper());
+
+              private final Runnable uiUpdater = new Runnable() {
+                  @Override
+                  public void run() {
+                      updateUI();
+                      uiHandler.postDelayed(this, 400);
+                  }
+              };
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                          requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 101);
+                      }
+                  }
+
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(LinearLayout.VERTICAL);
+                  layout.setGravity(Gravity.CENTER);
+                  layout.setBackgroundColor(Color.parseColor("#121212"));
+                  layout.setPadding(60, 60, 60, 60);
+
+                  TextView title = new TextView(this);
+                  title.setText("HUTCH 4G+ BOOSTER");
+                  title.setTextSize(26);
+                  title.setTypeface(null, Typeface.BOLD);
+                  title.setTextColor(Color.parseColor("#FF9800"));
+                  title.setGravity(Gravity.CENTER);
+                  layout.addView(title);
+
+                  TextView sub = new TextView(this);
+                  sub.setText("No Heating • No Battery Drain\nNotification Switch Enabled");
+                  sub.setTextSize(14);
+                  sub.setTextColor(Color.parseColor("#AAAAAA"));
+                  sub.setGravity(Gravity.CENTER);
+                  sub.setPadding(0, 15, 0, 80);
+                  layout.addView(sub);
+
+                  statusText = new TextView(this);
+                  statusText.setTextSize(20);
+                  statusText.setTypeface(null, Typeface.BOLD);
+                  statusText.setGravity(Gravity.CENTER);
+                  statusText.setPadding(0, 0, 0, 50);
+                  layout.addView(statusText);
+
+                  toggleBtn = new Button(this);
+                  toggleBtn.setTextSize(18);
+                  toggleBtn.setTypeface(null, Typeface.BOLD);
+                  toggleBtn.setTextColor(Color.WHITE);
+                  toggleBtn.setPadding(70, 45, 70, 45);
+                  toggleBtn.setOnClickListener(v -> {
+                      Intent intent = new Intent(this, KeepAliveService.class);
+                      intent.setAction(KeepAliveService.isRunning ? "STOP" : "START");
+                      startServiceCompat(this, intent);
+                  });
+                  layout.addView(toggleBtn);
+
+                  Intent initIntent = new Intent(this, KeepAliveService.class);
+                  initIntent.setAction("PANEL");
+                  startServiceCompat(this, initIntent);
+
+                  setContentView(layout);
+              }
+
+              public static void startServiceCompat(Context ctx, Intent i) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
+                  else ctx.startService(i);
+              }
+
+              private void updateUI() {
+                  if (KeepAliveService.isRunning) {
+                      statusText.setText("🟢 BOOSTER: ON (4G+ Stable)");
+                      statusText.setTextColor(Color.parseColor("#4CAF50"));
+                      toggleBtn.setText("TURN OFF");
+                      toggleBtn.setBackgroundColor(Color.parseColor("#D32F2F"));
+                  } else {
+                      statusText.setText("🔴 BOOSTER: OFF");
+                      statusText.setTextColor(Color.parseColor("#F44336"));
+                      toggleBtn.setText("TURN ON");
+                      toggleBtn.setBackgroundColor(Color.parseColor("#388E3C"));
+                  }
+              }
+
+              @Override protected void onResume() { super.onResume(); uiHandler.post(uiUpdater); }
+              @Override protected void onPause() { super.onPause(); uiHandler.removeCallbacks(uiUpdater); }
+
+              public static class KeepAliveService extends Service {
+                  public static boolean isRunning = false;
+                  private static ScheduledExecutorService scheduler;
+                  private static final String CH_ID = "HutchBoostCh";
+
+                  @Override
+                  public int onStartCommand(Intent intent, int flags, int startId) {
+                      createChannel();
+                      String act = intent != null ? intent.getAction() : "";
+                      if ("START".equals(act)) startPing();
+                      else if ("STOP".equals(act)) stopPing();
+                      else if ("EXIT".equals(act)) {
+                          stopPing();
+                          stopForeground(true);
+                          stopSelf();
+                          return START_NOT_STICKY;
+                      }
+                      startForeground(1, buildNotif());
+                      return START_STICKY;
+                  }
+
+                  private void startPing() {
+                      isRunning = true;
+                      if (scheduler != null) scheduler.shutdownNow();
+                      scheduler = Executors.newSingleThreadScheduledExecutor();
+                      scheduler.scheduleAtFixedRate(() -> {
+                          HttpURLConnection c = null;
+                          try {
+                              c = (HttpURLConnection) new URL("http://connectivitycheck.gstatic.com/generate_204").openConnection();
+                              c.setRequestMethod("HEAD");
+                              c.setConnectTimeout(3000);
+                              c.setReadTimeout(3000);
+                              c.getResponseCode();
+                          } catch (Exception ignored) {
+                          } finally {
+                              if (c != null) c.disconnect();
+                          }
+                      }, 0, 5, TimeUnit.SECONDS);
+                  }
+
+                  private void stopPing() {
+                      isRunning = false;
+                      if (scheduler != null) { scheduler.shutdownNow(); scheduler = null; }
+                  }
+
+                  private Notification buildNotif() {
+                      PendingIntent openPi = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                      
+                      Intent togI = new Intent(this, KeepAliveService.class).setAction(isRunning ? "STOP" : "START");
+                      PendingIntent togPi = PendingIntent.getService(this, 1, togI, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+                      Intent exI = new Intent(this, KeepAliveService.class).setAction("EXIT");
+                      PendingIntent exPi = PendingIntent.getService(this, 2, exI, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+                      Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                              ? new Notification.Builder(this, CH_ID) : new Notification.Builder(this);
+
+                      return b.setContentTitle(isRunning ? "🟢 Hutch Booster: ON" : "🔴 Hutch Booster: OFF")
+                              .setContentText(isRunning ? "Keeping signal stable (Zero Heat)" : "Tap TURN ON to boost signal")
+                              .setSmallIcon(isRunning ? android.R.drawable.stat_sys_upload_done : android.R.drawable.stat_notify_sync)
+                              .setContentIntent(openPi)
+                              .setOngoing(true)
+                              .addAction(new Notification.Action.Builder(0, isRunning ? "TURN OFF" : "TURN ON", togPi).build())
+                              .addAction(new Notification.Action.Builder(0, "CLOSE", exPi).build())
+                              .build();
+                  }
+
+                  private void createChannel() {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          NotificationChannel ch = new NotificationChannel(CH_ID, "Booster Control", NotificationManager.IMPORTANCE_LOW);
+                          getSystemService(NotificationManager.class).createNotificationChannel(ch);
+                      }
+                  }
+
+                  @Override public IBinder onBind(Intent i) { return null; }
+              }
+
+              public static class BoosterTileService extends TileService {
+                  @Override public void onStartListening() { super.onStartListening(); syncTile(); }
+                  @Override public void onClick() {
+                      super.onClick();
+                      Intent i = new Intent(this, KeepAliveService.class).setAction(KeepAliveService.isRunning ? "STOP" : "START");
+                      startServiceCompat(this, i);
+                      new Handler(Looper.getMainLooper()).postDelayed(this::syncTile, 200);
+                  }
+                  private void syncTile() {
+                      Tile t = getQsTile();
+                      if (t != null) {
+                          t.setState(KeepAliveService.isRunning ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE);
+                          t.setLabel(KeepAliveService.isRunning ? "Boost: ON" : "Hutch Boost");
+                          t.updateTile();
+                      }
+                  }
+              }
+          }
+          EOF
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.2'
+
+      - name: Build APK
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hutch-Booster-v2-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
